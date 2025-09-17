@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flask-mongo
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+  namespace: flask-mongo
+type: Opaque
+stringData:
+  MONGO_INITDB_ROOT_USERNAME: 1@2b3$4
+  MONGO_INITDB_ROOT_PASSWORD: 9z8y7x
+  # Flask will consume this URI; matches the in-cluster DNS and auth requirements
+  MONGODB_URI: mongodb://1@2b3$4:9z8y7x@mongodb.flask-mongo.svc.cluster.local:27017/flask_db?authSource=admin
+---
+# For Minikube, use hostPath PV to persist MongoDB data
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mongo-pv
+  namespace: flask-mongo
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual
+  hostPath:
+    path: /data/minikube/mongo
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-pvc
+  namespace: flask-mongo
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Headless Service for stable DNS to StatefulSet pods (required pattern with StatefulSets)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-headless
+  namespace: flask-mongo
+spec:
+  clusterIP: None
+  selector:
+    app: mongodb
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+---
+# ClusterIP Service used by Flask to reach MongoDB (internal-only per requirement)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: flask-mongo
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - name: mongo
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: flask-mongo
+spec:
+  serviceName: mongodb-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:6.0
+          args:
+            - --auth
+            - --bind_ip
+            - 0.0.0.0
+          ports:
+            - containerPort: 27017
+              name: mongo
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-secret
+                  key: MONGO_INITDB_ROOT_PASSWORD
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "250Mi"
+            limits:
+              cpu: "500m"
+              memory: "500Mi"
+      volumes:
+        - name: mongo-data
+          persistentVolumeClaim:
+            claimName: mongo-pvc
